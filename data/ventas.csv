@@ -1,0 +1,6 @@
+id_venta,id_cliente,id_producto,cantidad,precio
+1,1,101,1,900
+2,2,102,2,25
+3,3,103,1,50
+4,1,104,2,200
+5,4,102,1,25
