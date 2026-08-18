@@ -434,3 +434,223 @@ resultado.select(
     F.col("total_gastado").desc()
 ).show()
 ```
+
+## 28. cast()
+
+Cambia el tipo de datos de una columna.
+
+```python
+df = df.withColumn(
+    "precio",
+    F.col("precio").cast("double")
+)
+```
+
+### Tipos principales
+
+```text
+string     → texto
+int        → entero
+long       → entero grande
+bigint     → equivalente a long
+float      → decimal
+double     → decimal con mayor precisión
+boolean    → True / False
+date       → fecha
+timestamp  → fecha + hora
+```
+
+### Ejemplo
+
+```python
+ventas = ventas.withColumn(
+    "id_cliente",
+    F.col("id_cliente").cast("int")
+)
+
+ventas = ventas.withColumn(
+    "cantidad",
+    F.col("cantidad").cast("long")
+)
+
+ventas = ventas.withColumn(
+    "precio",
+    F.col("precio").cast("double")
+)
+```
+
+Comprobar tipos:
+
+```python
+ventas.printSchema()
+```
+
+---
+
+## 29. Funciones de texto (Strings)
+
+### lower()
+
+Convierte a minúsculas.
+
+```python
+F.lower(F.col("nombre"))
+```
+
+Ejemplo:
+
+```python
+df = df.withColumn(
+    "nombre",
+    F.lower(F.col("nombre"))
+)
+```
+
+### upper()
+
+Convierte a mayúsculas.
+
+```python
+F.upper(F.col("nombre"))
+```
+
+### trim()
+
+Elimina espacios al principio y al final.
+
+```python
+F.trim(F.col("nombre"))
+```
+
+### length()
+
+Cuenta caracteres.
+
+```python
+F.length(F.col("nombre"))
+```
+
+### concat_ws()
+
+Une varias columnas utilizando un separador.
+
+```python
+F.concat_ws(
+    " ",
+    F.col("nombre"),
+    F.col("apellido")
+)
+```
+
+Ejemplo:
+
+```python
+df = df.withColumn(
+    "nombre_completo",
+    F.concat_ws(
+        " ",
+        F.col("nombre"),
+        F.col("apellido")
+    )
+)
+```
+
+### split()
+
+Divide un texto y devuelve un array.
+
+```python
+F.split(
+    F.col("nombre_completo"),
+    " "
+)
+```
+
+Ejemplo:
+
+```text
+"Mostafa Hmidi"
+→ ["Mostafa", "Hmidi"]
+```
+
+### regexp_replace()
+
+Reemplaza texto.
+
+```python
+F.regexp_replace(
+    F.col("telefono"),
+    "-",
+    ""
+)
+```
+
+Ejemplo:
+
+```text
+"600-123-456"
+→ "600123456"
+```
+
+### Combinar funciones
+
+Las funciones pueden combinarse unas dentro de otras.
+
+Se ejecutan de dentro hacia fuera:
+
+```python
+F.lower(
+    F.trim(
+        F.col("nombre")
+    )
+)
+```
+
+Ejemplo:
+
+```python
+df = df.withColumn(
+    "nombre_limpio",
+    F.lower(
+        F.trim(
+            F.col("nombre")
+        )
+    )
+)
+```
+
+```text
+"  MOSTAFA  "
+→ "mostafa"
+```
+
+### Ejemplo completo
+
+```python
+df = df.withColumn(
+    "nombre_limpio",
+    F.lower(
+        F.trim(
+            F.col("nombre")
+        )
+    )
+)
+
+df = df.withColumn(
+    "nombre_completo",
+    F.concat_ws(
+        " ",
+        F.col("nombre"),
+        F.col("apellido")
+    )
+)
+
+df = df.withColumn(
+    "telefono_limpio",
+    F.regexp_replace(
+        F.col("telefono"),
+        "-",
+        ""
+    )
+)
+```
