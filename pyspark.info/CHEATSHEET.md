@@ -1591,3 +1591,665 @@ df = df.withColumn(
     )
 )
 ```
+## PIVOT
+
+`pivot()` convierte los valores de una columna en nuevas columnas.
+
+Se utiliza después de `groupBy()` y normalmente junto con una agregación.
+
+```python
+df.groupBy("Country").pivot("Month").agg(
+    F.sum("TotalRevenue")
+)
+```
+
+Ejemplo:
+
+```text
+Country | Month | Revenue
+Spain   | 1     | 1000
+Spain   | 2     | 1500
+France  | 1     | 800
+France  | 2     | 900
+```
+
+Con `pivot()`:
+
+```text
+Country | 1    | 2
+Spain   | 1000 | 1500
+France  | 800  | 900
+```
+
+**Regla mental:**
+
+```text
+groupBy → qué quiero en filas
+pivot   → qué quiero convertir en columnas
+agg     → qué cálculo hago
+```
+
+---
+
+## UNION
+
+`union()` sirve para **apilar filas** de dos DataFrames.
+
+```python
+df_final = df1.union(df2)
+```
+
+Los DataFrames deben tener columnas compatibles y el **orden de las columnas importa**.
+
+```text
+df1
+Spain
+France
+
++
+
+df2
+Germany
+Italy
+
+↓
+
+df_final
+Spain
+France
+Germany
+Italy
+```
+
+### UNIONBYNAME
+
+`unionByName()` también apila filas, pero coloca los valores según el **nombre de las columnas**, no según su posición.
+
+```python
+df_final = df1.unionByName(df2)
+```
+
+Es más seguro cuando dos DataFrames tienen las mismas columnas pero están en distinto orden.
+
+**Regla mental:**
+
+```text
+join → añade columnas
+union → añade filas
+```
+
+---
+
+## PARTICIONES
+
+Spark divide los datos en **particiones** para poder procesarlos en paralelo.
+
+Puedes consultar el número de particiones:
+
+```python
+df.rdd.getNumPartitions()
+```
+
+### repartition()
+
+Cambia el número de particiones **redistribuyendo los datos**.
+
+```python
+df2 = df.repartition(4)
+```
+
+Puede provocar un **shuffle**, porque Spark tiene que mover datos entre particiones.
+
+### coalesce()
+
+Sirve principalmente para **reducir** el número de particiones.
+
+```python
+df2 = df.coalesce(4)
+```
+
+Si pasamos de 8 → 4, normalmente es más barato que `repartition(4)` porque intenta evitar un shuffle completo.
+
+**Regla mental:**
+
+```text
+repartition → redistribuir
+coalesce    → reducir
+```
+
+---
+
+## SHUFFLE
+
+Un **shuffle** ocurre cuando Spark necesita mover datos entre particiones para reorganizarlos.
+
+Por ejemplo:
+
+```python
+df.groupBy("Country").agg(
+    F.sum("Quantity")
+)
+```
+
+Si los datos de `Spain` están repartidos entre varias particiones, Spark tiene que moverlos para poder agruparlos correctamente.
+
+El shuffle puede ser costoso porque implica:
+
+* mover datos entre particiones
+* comunicación entre ejecutores en un cluster
+* uso de memoria
+* posible escritura y lectura desde disco
+
+Operaciones que pueden provocar shuffle:
+
+```text
+groupBy()
+join()
+distinct()
+repartition()
+```
+
+**Regla mental:**
+
+```text
+Procesar datos donde están → barato
+Mover datos entre particiones → shuffle → más costoso
+```
+
+---
+
+## CACHE
+
+`cache()` sirve para guardar un DataFrame en memoria cuando sabemos que vamos a utilizarlo varias veces.
+
+```python
+ventas = retail.filter(
+    F.col("Quantity") > 0
+)
+
+ventas.cache()
+```
+
+Después podemos reutilizar `ventas`:
+
+```python
+ventas.count()
+
+ventas.groupBy("Country").count().show()
+
+ventas.groupBy("CustomerID").count().show()
+```
+
+Sin cachear, Spark puede tener que volver a calcular las transformaciones anteriores para diferentes acciones.
+
+### Importante: Spark es Lazy
+
+Esto:
+
+```python
+ventas.cache()
+```
+
+no ejecuta inmediatamente el DataFrame.
+
+Una acción como:
+
+```python
+ventas.count()
+```
+
+hace que Spark ejecute el procesamiento y pueda materializar el cache.
+
+Cuando ya no necesitamos los datos:
+
+```python
+ventas.unpersist()
+```
+
+libera el DataFrame cacheado de la memoria.
+
+**Regla mental:**
+
+```text
+cache()     → voy a reutilizar estos datos
+unpersist() → ya no los necesito
+```
+# Optimización y rendimiento en PySpark
+
+## 1. `explain()`
+
+`explain()` permite ver el **plan de ejecución** que Spark utilizará para ejecutar una consulta.
+
+```python
+df.explain()
+```
+
+Sirve para entender qué operaciones realiza Spark y detectar posibles problemas de rendimiento.
+
+Operaciones que podemos encontrar:
+
+* `FileScan` → lectura de los datos.
+* `Filter` → aplicación de filtros.
+* `Project` → selección o creación de columnas.
+* `HashAggregate` → agregaciones como `sum`, `count`, `avg`, etc.
+* `Exchange` → movimiento de datos entre particiones (**shuffle**).
+* `TakeOrderedAndProject` → operaciones como `orderBy().limit()`.
+
+Ejemplo:
+
+```text
+HashAggregate
+    ↓
+Exchange
+    ↓
+HashAggregate
+    ↓
+Filter
+    ↓
+FileScan
+```
+
+Spark puede hacer una **agregación parcial antes del shuffle** para reducir la cantidad de datos que necesita mover.
+
+---
+
+## 2. Shuffle
+
+Un **shuffle** ocurre cuando Spark necesita mover datos entre particiones para poder realizar una operación.
+
+Por ejemplo:
+
+```python
+df.groupBy("CustomerID").agg(
+    F.sum("Quantity")
+)
+```
+
+Para agrupar todos los registros del mismo `CustomerID`, Spark necesita llevar los datos correspondientes a la misma clave a una misma partición.
+
+En el plan podemos ver:
+
+```text
+Exchange hashpartitioning(CustomerID, 200)
+```
+
+`Exchange` normalmente indica que se está produciendo un shuffle.
+
+### Importante
+
+Un shuffle **no significa que el código esté mal**.
+
+Muchas operaciones necesitan shuffle, por ejemplo:
+
+* `groupBy`
+* algunos `join`
+* `distinct`
+* `repartition`
+* algunas funciones de ventana
+
+El objetivo es evitar **shuffles innecesarios** y reducir la cantidad de datos que se mueve.
+
+---
+
+## 3. Broadcast
+
+Si tenemos una tabla pequeña y otra grande, podemos utilizar `broadcast()` para evitar un shuffle grande.
+
+```python
+from pyspark.sql.functions import broadcast
+
+resultado = ventas.join(
+    broadcast(clientes),
+    "CustomerID"
+)
+```
+
+Spark puede copiar la tabla pequeña a las particiones donde se encuentra la tabla grande.
+
+Esto puede producir un:
+
+```text
+BroadcastHashJoin
+```
+
+en el plan de ejecución.
+
+### Importante
+
+No debemos utilizar `broadcast()` con tablas enormes.
+
+La idea es:
+
+```text
+tabla grande + tabla pequeña
+        ↓
+     broadcast
+        ↓
+evitar shuffle innecesario
+```
+
+---
+
+## 4. Particiones
+
+Podemos consultar cuántas particiones tiene un DataFrame:
+
+```python
+df.rdd.getNumPartitions()
+```
+
+### `repartition()`
+
+Cambia el número de particiones redistribuyendo los datos.
+
+```python
+df.repartition(10)
+```
+
+Normalmente implica un **shuffle**.
+
+También podemos repartir utilizando una columna:
+
+```python
+df.repartition("CustomerID")
+```
+
+### `coalesce()`
+
+Se utiliza principalmente para **reducir** el número de particiones.
+
+```python
+df.coalesce(5)
+```
+
+Intenta reducir las particiones evitando un shuffle completo cuando sea posible.
+
+### Diferencia básica
+
+```text
+repartition → redistribuye los datos → puede hacer shuffle
+
+coalesce → principalmente reduce particiones → intenta evitar shuffle
+```
+
+---
+
+## 5. Cache y Persist
+
+Si vamos a utilizar varias veces el mismo DataFrame, podemos guardarlo en memoria para evitar repetir su cálculo.
+
+### `cache()`
+
+```python
+df.cache()
+```
+
+### `persist()`
+
+Permite elegir cómo queremos almacenar los datos:
+
+```python
+from pyspark import StorageLevel
+
+df.persist(StorageLevel.MEMORY_AND_DISK)
+```
+
+### Eliminar de la memoria
+
+```python
+df.unpersist()
+```
+
+### Importante
+
+`cache()` y `persist()` son **lazy**.
+
+El DataFrame no se guarda realmente hasta que Spark ejecuta una acción.
+
+Ejemplo:
+
+```python
+df.cache()
+
+df.show()
+```
+
+Después de ejecutar una acción, Spark puede reutilizar los datos almacenados en operaciones posteriores.
+
+---
+
+# 6. Data Skew
+
+**Data Skew** significa que los datos están distribuidos de forma muy desigual entre las particiones.
+
+Ejemplo:
+
+```text
+Partición 1 → 10.000 registros
+Partición 2 → 12.000 registros
+Partición 3 → 11.000 registros
+Partición 4 → 10.500 registros
+Partición 5 → 8.000.000 registros  ← problema
+```
+
+Una tarea puede tardar muchísimo más que las demás porque tiene que procesar muchos más datos.
+
+En Spark UI podemos detectar este problema comparando las tareas.
+
+Indicadores importantes:
+
+* Task Duration
+* Shuffle Read
+* Shuffle Write
+* Input Size
+
+Si la mayoría de tareas tardan poco pero una tarda muchísimo más, puede existir **data skew**.
+
+---
+
+# 7. Salting
+
+**Salting** es una técnica para repartir una clave que tiene demasiados datos.
+
+Por ejemplo, si el cliente `50` tiene una cantidad enorme de registros, podemos añadir un valor aleatorio:
+
+```python
+retail_salted = retail.withColumn(
+    "salt",
+    F.when(
+        F.col("CustomerID") == 50,
+        F.floor(F.rand() * 5)
+    ).otherwise(0)
+)
+```
+
+Para varios clientes:
+
+```python
+retail_salted = retail.withColumn(
+    "salt",
+    F.when(
+        F.col("CustomerID").isin(50, 100, 200),
+        F.floor(F.rand() * 5)
+    ).otherwise(0)
+)
+```
+
+Esto crea valores de `salt` entre `0` y `4`.
+
+### Importante
+
+Esto **no significa que creemos 5 particiones por cliente**.
+
+Estamos creando 5 posibles valores de una nueva clave para repartir el trabajo.
+
+Podemos crear una clave combinando el cliente y el salt:
+
+```python
+retail_salted = retail_salted.withColumn(
+    "SaltedCustomerID",
+    F.concat(
+        F.col("CustomerID").cast("string"),
+        F.lit("_"),
+        F.col("salt").cast("string")
+    )
+)
+```
+
+Por ejemplo:
+
+```text
+CustomerID    salt    SaltedCustomerID
+
+50            0       50_0
+50            1       50_1
+50            2       50_2
+50            3       50_3
+50            4       50_4
+```
+
+Después hacemos una agregación parcial:
+
+```python
+primera_agg = retail_salted.groupBy(
+    "CustomerID",
+    "SaltedCustomerID"
+).agg(
+    F.sum("Quantity").alias("PartialQuantity")
+)
+```
+
+Y finalmente volvemos a agrupar por el cliente original:
+
+```python
+resultado = primera_agg.groupBy(
+    "CustomerID"
+).agg(
+    F.sum("PartialQuantity").alias("TotalQuantity")
+)
+```
+
+### Patrón del Salting
+
+```text
+datos
+   ↓
+añadir salt
+   ↓
+groupBy(key + salt)
+   ↓
+agregación parcial
+   ↓
+groupBy(key)
+   ↓
+agregación final
+```
+
+En un proyecto real, primero debemos identificar qué claves tienen **data skew** y aplicar salting solamente cuando sea necesario.
+
+---
+
+# 8. AQE — Adaptive Query Execution
+
+**AQE (Adaptive Query Execution)** permite que Spark adapte el plan de ejecución durante la ejecución utilizando información real obtenida de los datos.
+
+En el plan podemos ver:
+
+```text
+AdaptiveSparkPlan
+```
+
+La idea es:
+
+```text
+plan inicial
+     ↓
+ejecución
+     ↓
+información real de los datos
+     ↓
+AQE puede adaptar la ejecución
+     ↓
+mejor rendimiento
+```
+
+AQE puede ayudar, entre otras cosas, con:
+
+* Reducir particiones pequeñas después de un shuffle.
+* Cambiar la estrategia de un `join`.
+* Utilizar broadcast cuando una tabla resulta ser suficientemente pequeña.
+* Mitigar algunos problemas de data skew.
+
+---
+
+# 9. Spark UI
+
+Spark UI permite observar cómo se está ejecutando nuestro programa.
+
+Normalmente podemos acceder a:
+
+```text
+http://localhost:4040
+```
+
+También podemos consultar la URL desde PySpark:
+
+```python
+spark.sparkContext.uiWebUrl
+```
+
+En Spark UI podemos encontrar información sobre:
+
+* Jobs
+* Stages
+* Storage
+* Environment
+* Executors
+* SQL / DataFrame
+
+Para analizar **data skew**, nos interesa especialmente observar las tareas de una Stage y comparar:
+
+```text
+Task Duration
+Shuffle Read
+Shuffle Write
+Input Size
+```
+
+En **Summary Metrics** aparecen estadísticas agregadas como:
+
+```text
+Min
+Median
+Max
+```
+
+Pero para detectar claramente qué tarea concreta es problemática necesitamos observar las **tareas individuales**.
+
+---
+
+# 🧠 Idea general de optimización
+
+Cuando analizamos el rendimiento de PySpark podemos pensar:
+
+```text
+1. ¿Qué datos estoy leyendo?
+        ↓
+2. ¿Estoy filtrando pronto?
+        ↓
+3. ¿Estoy moviendo muchos datos?
+        ↓
+4. ¿Tengo un Shuffle?
+        ↓
+5. ¿Tengo Data Skew?
+        ↓
+6. ¿Puedo utilizar Broadcast?
+        ↓
+7. ¿Necesito reparticionar?
+        ↓
+8. ¿Puedo reutilizar datos con Cache/Persist?
+        ↓
+9. ¿AQE puede optimizar la ejecución?
+        ↓
+10. Revisar Spark UI
+```
