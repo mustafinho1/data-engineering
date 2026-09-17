@@ -2253,3 +2253,194 @@ Cuando analizamos el rendimiento de PySpark podemos pensar:
         ↓
 10. Revisar Spark UI
 ```
+### Carga incremental — `append` vs `overwrite`
+
+Cuando recibimos datos nuevos y queremos incorporarlos al histórico Parquet:
+
+```python
+ventas_nuevas.write \
+    .mode("append") \
+    .partitionBy("Year", "Month") \
+    .parquet("../data/ventas_parquet")
+```
+
+**`append`** → añade los nuevos datos al histórico sin borrar los existentes.
+
+```python
+.mode("overwrite")
+```
+
+**`overwrite`** → reemplaza los datos existentes en la ruta indicada.
+
+### Patrón ETL
+
+```text
+CSV nuevo
+   ↓
+leer
+   ↓
+limpiar
+   ↓
+transformar
+   ↓
+append
+   ↓
+Parquet histórico actualizado
+```
+
+💡 En una carga incremental, normalmente procesamos solo los datos nuevos y los añadimos al histórico, en lugar de volver a procesar todos los datos desde cero.
+# ETL incremental — detección y registro de archivos
+
+## 1. Detectar archivos de una carpeta
+
+```python
+import os
+
+archivos = os.listdir("../data/raw/")
+```
+
+`os.listdir()` devuelve una lista con los nombres de los archivos que hay dentro de una carpeta.
+
+---
+
+## 2. Tener un registro de archivos ya procesados
+
+Creamos:
+
+```text
+data/
+└── processed_files.txt
+```
+
+Ejemplo:
+
+```text
+ventas_2026_09_01.csv
+ventas_2026_09_02.csv
+ventas_2026_09_03.csv
+```
+
+---
+
+## 3. Leer el registro
+
+```python
+with open("../data/processed_files.txt", "r") as f:
+    archivos_procesados = f.read().splitlines()
+```
+
+* `open()` → abre el archivo.
+* `"r"` → modo lectura (`read`).
+* `f.read()` → lee todo el contenido.
+* `splitlines()` → separa el contenido por líneas y crea una lista.
+
+Resultado:
+
+```python
+[
+    "ventas_2026_09_01.csv",
+    "ventas_2026_09_02.csv",
+    "ventas_2026_09_03.csv"
+]
+```
+
+---
+
+## 4. Detectar solamente los archivos nuevos
+
+```python
+archivos_nuevos = [
+    archivo
+    for archivo in archivos
+    if archivo.endswith(".csv")
+    and archivo not in archivos_procesados
+]
+```
+
+* `endswith(".csv")` → solo archivos CSV.
+* `not in` → comprueba que todavía no estén registrados como procesados.
+
+Así evitamos volver a procesar archivos antiguos.
+
+---
+
+## 5. Procesar automáticamente cada archivo nuevo
+
+```python
+for archivo in archivos_nuevos:
+
+    nuevo_csv = spark.read.csv(
+        f"../data/raw/{archivo}",
+        header=True,
+        inferSchema=True
+    )
+```
+
+El `for` recorre cada elemento de `archivos_nuevos`.
+
+En cada vuelta, `archivo` contiene el nombre de un CSV diferente.
+
+---
+
+## 6. Registrar el archivo después de procesarlo
+
+Una vez que el procesamiento y guardado hayan terminado correctamente:
+
+```python
+with open("../data/processed_files.txt", "a") as f:
+    f.write(archivo + "\n")
+```
+
+* `"a"` → modo `append`, añade contenido al final.
+* `write()` → escribe el nombre.
+* `"\n"` → salto de línea.
+
+De esta forma, el archivo queda actualizado:
+
+```text
+ventas_2026_09_01.csv
+ventas_2026_09_02.csv
+ventas_2026_09_03.csv
+ventas_2026_09_04.csv
+```
+
+## Concepto clave
+
+```text
+"r" → READ → leer
+"a" → APPEND → añadir
+```
+
+### Flujo completo
+
+```text
+CSV nuevos
+    ↓
+os.listdir()
+    ↓
+comprobar processed_files.txt
+    ↓
+detectar archivos nuevos
+    ↓
+leer CSV con Spark
+    ↓
+limpiar y transformar
+    ↓
+evitar duplicados
+    ↓
+append al Parquet
+    ↓
+registrar archivo como procesado
+```
+
+### Diferencia importante
+
+**Control a nivel de archivo:**
+
+`processed_files.txt` evita procesar dos veces el mismo CSV.
+
+**Control a nivel de registro:**
+
+`left_anti` evita insertar registros que ya existen en el histórico.
+
+Son dos mecanismos diferentes y pueden utilizarse juntos.
