@@ -2444,3 +2444,345 @@ registrar archivo como procesado
 `left_anti` evita insertar registros que ya existen en el histórico.
 
 Son dos mecanismos diferentes y pueden utilizarse juntos.
+
+# Funciones y automatización ETL
+
+## 1. Funciones en Python
+
+Una función permite guardar una lógica para poder reutilizarla.
+
+```python
+def limpiar_ventas(df):
+    df = df.filter(
+        (F.col("Quantity") > 0) &
+        (F.col("UnitPrice") > 0) &
+        F.col("CustomerID").isNotNull()
+    )
+
+    return df
+```
+
+* `def` → crea una función.
+* `limpiar_ventas` → nombre de la función.
+* `df` → parámetro que recibe el DataFrame.
+* `return df` → devuelve el DataFrame resultante.
+
+Podemos utilizarla con cualquier DataFrame compatible:
+
+```python
+lista_limpia = limpiar_ventas(lista)
+```
+
+El nombre `df` dentro de la función no obliga a que el DataFrame se llame `df` fuera.
+
+```text
+lista → limpiar_ventas() → lista_limpia
+```
+
+---
+
+## 2. Función de transformación
+
+Podemos separar también las transformaciones:
+
+```python
+def transformar_ventas(df):
+    df = df.withColumn(
+        "TotalPrice",
+        F.col("Quantity") * F.col("UnitPrice")
+    ).withColumn(
+        "Year",
+        F.year("InvoiceDate")
+    ).withColumn(
+        "Month",
+        F.month("InvoiceDate")
+    )
+
+    return df
+```
+
+Su responsabilidad es transformar el DataFrame.
+
+---
+
+## 3. Una función puede llamar a otras funciones
+
+Podemos crear una función principal que coordine diferentes pasos:
+
+```python
+def procesar_archivo(ruta):
+
+    df = spark.read.csv(
+        ruta,
+        header=True,
+        inferSchema=True
+    )
+
+    df = limpiar_ventas(df)
+
+    df = transformar_ventas(df)
+
+    return df
+```
+
+El flujo es:
+
+```text
+ruta
+ ↓
+leer CSV
+ ↓
+limpiar_ventas()
+ ↓
+transformar_ventas()
+ ↓
+return df
+```
+
+La ventaja es separar responsabilidades:
+
+```text
+limpiar_ventas()      → limpieza
+transformar_ventas()  → transformación
+procesar_archivo()    → coordina el proceso
+```
+
+---
+
+## 4. Parámetro `ruta`
+
+`ruta` contiene la ubicación del archivo que queremos procesar.
+
+```python
+df = procesar_archivo("../data/retail.csv")
+```
+
+En este caso:
+
+```text
+ruta = "../data/retail.csv"
+```
+
+Esto permite utilizar la misma función con diferentes archivos:
+
+```python
+procesar_archivo("../data/ventas_01.csv")
+procesar_archivo("../data/ventas_02.csv")
+procesar_archivo("../data/ventas_03.csv")
+```
+
+---
+
+## 5. Detectar archivos nuevos
+
+En una automatización podemos tener:
+
+```text
+data/
+├── raw/
+│   ├── ventas_01.csv
+│   ├── ventas_02.csv
+│   └── ventas_03.csv
+│
+└── processed_files.txt
+```
+
+`processed_files.txt` guarda los nombres de archivos que ya hemos procesado.
+
+Primero obtenemos los archivos existentes:
+
+```python
+archivos = os.listdir("../data/raw/")
+```
+
+Después leemos los que ya fueron procesados:
+
+```python
+with open("../data/processed_files.txt", "r") as f:
+    archivos_procesados = f.read().splitlines()
+```
+
+Y podemos detectar únicamente los nuevos:
+
+```python
+archivos_nuevos = [
+    archivo
+    for archivo in archivos
+    if archivo.endswith(".csv")
+    and archivo not in archivos_procesados
+]
+```
+
+### Importante
+
+`archivos` → lista con todos los archivos.
+
+`archivo` → cada archivo individual dentro de la lista.
+
+Por eso:
+
+```python
+archivo.endswith(".csv")
+```
+
+y no:
+
+```python
+archivos.endswith(".csv")
+```
+
+`endswith()` es un método de strings.
+
+---
+
+## 6. Construir la ruta completa
+
+Podemos tener:
+
+```python
+carpeta_raw = "../data/raw/"
+```
+
+y:
+
+```python
+archivo = "ventas_01.csv"
+```
+
+Para unir ambos:
+
+```python
+ruta = os.path.join(carpeta_raw, archivo)
+```
+
+Resultado:
+
+```text
+../data/raw/ventas_01.csv
+```
+
+Después:
+
+```python
+df = procesar_archivo(ruta)
+```
+
+Es equivalente a:
+
+```python
+df = procesar_archivo("../data/raw/ventas_01.csv")
+```
+
+`os.path.join()` sirve para construir rutas correctamente.
+
+---
+
+## 7. Automatización completa
+
+El flujo completo puede quedar así:
+
+```python
+import os
+
+carpeta_raw = "../data/raw/"
+archivo_registro = "../data/processed_files.txt"
+
+archivos = os.listdir(carpeta_raw)
+
+with open(archivo_registro, "r") as f:
+    archivos_procesados = f.read().splitlines()
+
+archivos_nuevos = [
+    archivo
+    for archivo in archivos
+    if archivo.endswith(".csv")
+    and archivo not in archivos_procesados
+]
+
+for archivo in archivos_nuevos:
+
+    ruta = os.path.join(carpeta_raw, archivo)
+
+    df = procesar_archivo(ruta)
+
+    df.write \
+        .mode("append") \
+        .partitionBy("Year", "Month") \
+        .parquet("../data/ventas_parquet")
+
+    with open(archivo_registro, "a") as f:
+        f.write(archivo + "\n")
+```
+
+---
+
+## 8. Orden del proceso
+
+El orden es importante:
+
+```text
+1. Buscar archivos
+       ↓
+2. Detectar archivos nuevos
+       ↓
+3. Construir la ruta
+       ↓
+4. procesar_archivo()
+       ↓
+5. Guardar en Parquet
+       ↓
+6. Marcar archivo como procesado
+```
+
+No debemos marcar el archivo como procesado antes de guardarlo correctamente.
+
+Correcto:
+
+```python
+df.write.parquet(...)
+
+with open(archivo_registro, "a") as f:
+    f.write(archivo + "\n")
+```
+
+Si el `write` falla, no se registra el archivo como procesado y podremos volver a intentarlo.
+
+---
+
+## 9. Idea general del pipeline
+
+```text
+CSV nuevo
+   ↓
+data/raw/
+   ↓
+detectar archivo nuevo
+   ↓
+procesar_archivo()
+   ↓
+limpiar_ventas()
+   ↓
+transformar_ventas()
+   ↓
+Parquet
+   ↓
+Year / Month
+   ↓
+registrar archivo como procesado
+```
+
+### Conceptos clave
+
+* **Función** → reutilizar lógica.
+* **Parámetro** → información que recibe una función.
+* **`return`** → devuelve el resultado.
+* **`procesar_archivo()`** → coordina diferentes funciones.
+* **`ruta`** → ubicación del archivo.
+* **`os.listdir()`** → obtiene archivos de una carpeta.
+* **`os.path.join()`** → une partes de una ruta.
+* **`endswith()`** → comprueba el final de un string.
+* **`processed_files.txt`** → registro de archivos ya procesados.
+* **`append`** → añade nuevos datos sin sobrescribir los existentes.
+* **`partitionBy("Year", "Month")`** → organiza los datos de Parquet por particiones.
+* **Idempotencia a nivel de archivo** → no volver a procesar archivos que ya están registrados.
+* **Orden de seguridad** → guardar correctamente antes de marcar como procesado.
